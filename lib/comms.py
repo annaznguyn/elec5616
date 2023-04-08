@@ -1,8 +1,7 @@
 import struct
-import secrets
+from Crypto.Cipher import AES
 
 from dh import create_dh_key, calculate_dh_secret
-from .xor import XOR
 from lib.helpers import appendMac, macCheck, appendSalt, generate_random_string
 
 
@@ -13,6 +12,7 @@ class StealthConn(object):
         self.server = server
         self.verbose = True  # verbose
         self.shared_secret = None
+        self.shared_iv = None
         self.initiate_session()
 
     def initiate_session(self):
@@ -20,6 +20,12 @@ class StealthConn(object):
 
         # This can be broken into code run just on the server or just on the clientasdsad
         if self.server or self.client:
+            my_public_iv, my_private_iv = create_dh_key()
+            self.send(bytes(str(my_public_iv), 'ascii'))
+            their_public_iv = int(self.recv())
+            store = calculate_dh_secret(their_public_iv, my_private_iv)
+            self.shared_iv = store[:16]
+
             my_public_key, my_private_key = create_dh_key()
             # Send them our public key
             self.send(bytes(str(my_public_key), "ascii"))
@@ -33,7 +39,7 @@ class StealthConn(object):
         if self.shared_secret:
             # Encrypt the message
             # Project TODO: Is XOR the best cipher here? Why not? Use a more secure cipher (from the pycryptodome library)
-            cipher = XOR(self.shared_secret)
+            cipher = AES.new(self.shared_secret, AES.MODE_OFB, iv=self.shared_iv)
             data_to_send = cipher.encrypt(data)
             if self.verbose:
                 print()
@@ -59,7 +65,7 @@ class StealthConn(object):
 
             encrypted_data = self.conn.recv(pkt_len)
             # Project TODO: as in send(), change the cipher here.
-            cipher = XOR(self.shared_secret)
+            cipher = AES.new(self.shared_secret, AES.MODE_OFB, iv=self.shared_iv)
             original_msg = cipher.decrypt(encrypted_data)
 
             if self.verbose:
