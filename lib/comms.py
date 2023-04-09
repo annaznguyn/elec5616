@@ -1,18 +1,21 @@
 import struct
-from Crypto.Cipher import AES
+import secrets
+import hmac
+import hashlib
 
+from Crypto.Cipher import AES
 from dh import create_dh_key, calculate_dh_secret
 from lib.helpers import appendMac, macCheck, appendSalt, generate_random_string
-
 
 class StealthConn(object):
     def __init__(self, conn, client=False, server=False, verbose=False):
         self.conn = conn
         self.client = client
         self.server = server
-        self.verbose = True  # verbose
+        self.verbose = True
         self.shared_secret = None
         self.shared_iv = None
+        self.mac_key = generate_random_string()  # Generate a random key for the MAC
         self.initiate_session()
 
     def initiate_session(self):
@@ -38,9 +41,13 @@ class StealthConn(object):
     def send(self, data):
         if self.shared_secret:
             # Encrypt the message
-            # Project TODO: Is XOR the best cipher here? Why not? Use a more secure cipher (from the pycryptodome library)
             cipher = AES.new(self.shared_secret, AES.MODE_OFB, iv=self.shared_iv)
             data_to_send = cipher.encrypt(data)
+
+            # Generate MAC and append to data
+            mac = hmac.new(self.mac_key.encode(), data_to_send, hashlib.sha256).digest()
+            data_to_send = appendMac(data_to_send, mac)
+
             if self.verbose:
                 print()
                 print("Original message : {}".format(data))
@@ -62,11 +69,18 @@ class StealthConn(object):
         pkt_len = unpacked_contents[0]
 
         if self.shared_secret:
-
             encrypted_data = self.conn.recv(pkt_len)
-            # Project TODO: as in send(), change the cipher here.
+
+            # Separate MAC from data
+            data_to_recv, mac = macCheck(encrypted_data)
+
+            # Verify MAC
+            computed_mac = hmac.new(self.mac_key.encode(), data_to_recv, hashlib.sha256).digest()
+            if not hmac.compare_digest(mac, computed_mac):
+                raise ValueError("MAC does not match! Message may have been tampered with.")
+
             cipher = AES.new(self.shared_secret, AES.MODE_OFB, iv=self.shared_iv)
-            original_msg = cipher.decrypt(encrypted_data)
+            original_msg = cipher.decrypt(data_to_recv)
 
             if self.verbose:
                 print()
