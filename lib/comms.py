@@ -13,7 +13,7 @@ class StealthConn(object):
         self.conn = conn
         self.client = client
         self.server = server
-        self.verbose = True
+        self.verbose = verbose
         self.shared_secret = None
         self.initiate_session()
         
@@ -70,55 +70,39 @@ class StealthConn(object):
         self.conn.sendall(data_to_send)
 
     def recv(self):
-        # Decode the data's length from an unsigned two byte int ('H')
-        pkt_len_packed = b""
-        while len(pkt_len_packed) < struct.calcsize("H"):
-            pkt_len_packed += self.conn.recv(struct.calcsize("H") - len(pkt_len_packed))
-        pkt_len = struct.unpack("H", pkt_len_packed)[0]
-        
-        print("Received packet length:", pkt_len)
+        # Receive the length of the incoming packet (as an unsigned two byte int)
+        pkt_len = self.conn.recv(2)
+        pkt_len = struct.unpack("H", pkt_len)[0]
 
-        if self.shared_secret:
-            encrypted_data = self.conn.recv(pkt_len)
-
-            print("Received encrypted data:", encrypted_data)
-
-            # Separate salt from HMAC and data
-            data_to_recv, hmac_received = encrypted_data[:-32], encrypted_data[-32:]
-
-            print("Received HMAC:", hmac_received)
-            print("Received data:", data_to_recv)
-
-          # Verify HMAC
-            hmac_value = hmac.new(self.shared_secret, data_to_recv, hashlib.sha256).digest()
-            try:
-                if not hmac.compare_digest(hmac_value, hmac_received):
-                    raise ValueError("HMAC does not match! Message may have been tampered with.")
-            except ValueError as e:
-                print(str(e))
+        # Receive the rest of the packet
+        data = b""
+        while len(data) < pkt_len:
+            packet = self.conn.recv(pkt_len - len(data))
+            if not packet:
                 return None
+            data += packet
 
-            print("HMAC check passed.")
+        # Extract the HMAC and verify it
+        hmac_received = data[-32:]
+        data_without_hmac = data[:-32-8]
+        print("shared_secret:", type(self.shared_secret), self.shared_secret)
+        print("data_without_hmac:", type(data_without_hmac), data_without_hmac)
+        hmac_calculated = hmac.new(self.shared_secret, data_without_hmac, hashlib.sha256).digest()
+        if hmac_received != hmac_calculated:
+            raise ValueError("HMAC validation failed")
 
-            # Remove salt from data
-            original_msg = data_to_recv[:-8]
-            
-            cipher = AES.new(self.shared_secret, AES.MODE_OFB, iv=self.shared_iv)
-            original_msg = cipher.decrypt(bytes(original_msg))
+        # Decrypt the data and remove the appended salt
+        cipher = AES.new(self.shared_secret, AES.MODE_OFB, iv=self.shared_iv)
+        decrypted_data = cipher.decrypt(data_without_hmac[:-8])
+        decrypted_data = decrypted_data.rstrip(b'\0')
 
-            print("Decrypted message:", original_msg)
+        if self.verbose:
+            print()
+            print("Received packet of length: {}".format(len(data)))
+            print("Decrypted data: {}".format(repr(decrypted_data)))
+            print()
 
-            if self.verbose:
-                print()
-                print("Receiving message of length: {}".format(pkt_len))
-                print("Encrypted data: {}".format(repr(encrypted_data)))
-                print("Original message: {}".format(original_msg))
-                print()
-
-        else:
-            original_msg = self.conn.recv(pkt_len)
-
-        return original_msg
+        return decrypted_data
 
     def close(self):
         self.conn.close()
